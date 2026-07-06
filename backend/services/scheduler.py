@@ -1,15 +1,17 @@
+"""Vivify-specific job scheduling — competitor scans, trend analysis.
+
+Uses storyforge-studio engine.scheduler for the cron backbone.
+"""
 import logging
 from datetime import datetime, timezone
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from engine.scheduler import register_job, start as _engine_start, stop as _engine_stop
 
 from ..storage.db import fetchall, execute, fetchone
 from ..services.trends import add_signal
 from ..services.http_scraper import HttpScraperService
 
 logger = logging.getLogger("vivify.scheduler")
-scheduler = AsyncIOScheduler()
 
 
 async def scan_competitor(competitor_id: str, url: str, label: str) -> dict:
@@ -50,20 +52,14 @@ async def monitor_all_competitors():
 
 
 def start_scheduler():
-    if scheduler.running:
-        return
-    scheduler.add_job(
-        monitor_all_competitors,
-        trigger=CronTrigger(day_of_week="mon", hour=8, minute=0),
-        id="competitor_monitoring",
-        replace_existing=True,
+    register_job(
+        job_id="vivify_competitor_monitoring",
+        fn=monitor_all_competitors,
+        cron="0 8 * * 1",
         misfire_grace_time=3600,
     )
-    scheduler.start()
-    logger.info("Scheduler started — competitor scan every Monday 08:00")
+    _engine_start()
 
 
 def stop_scheduler():
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
-        logger.info("Scheduler stopped")
+    _engine_stop()

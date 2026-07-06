@@ -1,27 +1,24 @@
-"""Simple event bus — dispatches product events to omnichannel channels."""
-import json
+"""Simple event bus — dispatches product events to omnichannel channels.
+
+Extends storyforge-studio engine.event_bus with Vivify-specific handlers.
+"""
 import logging
-from typing import Any, Callable, Coroutine
+
+from engine.event_bus import on, emit as _engine_emit, clear as _engine_clear
 
 logger = logging.getLogger("vivify.event_bus")
 
-_handlers: dict[str, list[Callable[..., Coroutine]]] = {}
 
-
-def on(event: str):
-    def decorator(fn: Callable[..., Coroutine]):
-        _handlers.setdefault(event, []).append(fn)
-        return fn
-    return decorator
-
-
+# Re-export core functions
 async def emit(event: str, **data):
-    for handler in _handlers.get(event, []):
-        try:
-            await handler(**data)
-        except Exception as e:
-            logger.warning("Event handler %s for %s failed: %s", handler.__name__, event, e)
+    await _engine_emit(event, **data)
 
+
+def clear():
+    _engine_clear()
+
+
+# ─── Vivify-specific event handlers ──────────────────────────────────────
 
 async def on_product_created(product_id: str):
     from .omnichannel import list_channels, sync_product_to_channel
