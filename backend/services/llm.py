@@ -8,7 +8,7 @@ from ..config import SOC_GATEWAY_URL
 
 logger = logging.getLogger("vivify.llm")
 
-TRAMA_API_KEY = os.getenv("TRAMA_SERVICE_API_KEY", "")
+VIVIFY_SERVICE_API_KEY = os.getenv("VIVIFY_SERVICE_API_KEY", "")
 
 DESCRIPTION_TEMPLATES = {
     "default": "Jóia em {metal}, peça exclusiva com design artesanal. Peso: {weight}g.",
@@ -46,8 +46,8 @@ class SOCLLMService:
             "max_tokens": max_tokens,
         }
         headers = {"Content-Type": "application/json"}
-        if TRAMA_API_KEY:
-            headers["X-API-Key"] = TRAMA_API_KEY
+        if VIVIFY_SERVICE_API_KEY:
+            headers["X-API-Key"] = VIVIFY_SERVICE_API_KEY
 
         client = await self._get_client()
         for attempt in range(2):

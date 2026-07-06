@@ -1,27 +1,30 @@
-"""Trends service — wraps TRACTION weak signal detection for jewelry market intelligence."""
+"""Trends service — weak signal detection for jewelry market intelligence."""
 
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-import sys
-from pathlib import Path
-
-TRAMA_PATH = Path(__file__).resolve().parent.parent.parent.parent / "trama"
-TRACTION_PATH = Path(__file__).resolve().parent.parent.parent.parent / "traction"
-sys.path.insert(0, str(TRAMA_PATH))
-sys.path.insert(0, str(TRACTION_PATH))
-
-from trama.weak_signal.schemas import MonitoredTarget, SignalRecord  # noqa: E402
-from trama.weak_signal.state import SignalState  # noqa: E402
-from trama.weak_signal.registry import SignalRegistry  # noqa: E402
-from trama.weak_signal.enricher import SignalEnricher  # noqa: E402
-from trama.weak_signal.anomaly import AnomalyDetector  # noqa: E402
-from trama.weak_signal.alerts import AlertManager, AlertRecord  # noqa: E402
-from trama.weak_signal.channels import FileLogChannel  # noqa: E402
+from ..weak_signal.schemas import MonitoredTarget, SignalRecord
+from ..weak_signal.state import SignalState
+from ..weak_signal.registry import SignalRegistry
+from ..weak_signal.enricher import SignalEnricher
+from ..weak_signal.anomaly import AnomalyDetector
+from ..weak_signal.alerts import AlertManager, AlertRecord, FileLogChannel
 
 logger = logging.getLogger("vivify.trends")
+
+_SIGNAL_STATE = SignalState()
+_SIGNAL_REGISTRY = SignalRegistry()
+
+
+def get_state() -> SignalState:
+    return _SIGNAL_STATE
+
+
+def get_registry() -> SignalRegistry:
+    return _SIGNAL_REGISTRY
+
 
 _JEWELRY_QUERIES = {
     "design_trends": [
@@ -50,14 +53,6 @@ _JEWELRY_QUERIES = {
         "jewelry brand acquisition",
     ],
 }
-
-
-def get_state() -> SignalState:
-    return SignalState()
-
-
-def get_registry() -> SignalRegistry:
-    return SignalRegistry()
 
 
 def seed_jewelry_targets() -> int:
