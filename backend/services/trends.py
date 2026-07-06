@@ -1,13 +1,27 @@
-"""Trends service — jewelry market intelligence with local storage."""
+"""Trends service — wraps TRACTION weak signal detection for jewelry market intelligence."""
+
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger("vivify.trends")
+import sys
+from pathlib import Path
 
-SIGNALS_DB = Path(__file__).resolve().parent.parent / "signals_db.json"
+TRAMA_PATH = Path(__file__).resolve().parent.parent.parent.parent / "trama"
+TRACTION_PATH = Path(__file__).resolve().parent.parent.parent.parent / "traction"
+sys.path.insert(0, str(TRAMA_PATH))
+sys.path.insert(0, str(TRACTION_PATH))
+
+from trama.weak_signal.schemas import MonitoredTarget, SignalRecord  # noqa: E402
+from trama.weak_signal.state import SignalState  # noqa: E402
+from trama.weak_signal.registry import SignalRegistry  # noqa: E402
+from trama.weak_signal.enricher import SignalEnricher  # noqa: E402
+from trama.weak_signal.anomaly import AnomalyDetector  # noqa: E402
+from trama.weak_signal.alerts import AlertManager, AlertRecord  # noqa: E402
+from trama.weak_signal.channels import FileLogChannel  # noqa: E402
+
+logger = logging.getLogger("vivify.trends")
 
 _JEWELRY_QUERIES = {
     "design_trends": [
@@ -38,45 +52,48 @@ _JEWELRY_QUERIES = {
 }
 
 
-def _load_signals() -> list:
-    if not SIGNALS_DB.exists():
-        return []
-    try:
-        return json.loads(SIGNALS_DB.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
+def get_state() -> SignalState:
+    return SignalState()
 
 
-def _save_signals(signals: list):
-    SIGNALS_DB.parent.mkdir(parents=True, exist_ok=True)
-    SIGNALS_DB.write_text(json.dumps(signals, indent=2, default=str))
+def get_registry() -> SignalRegistry:
+    return SignalRegistry()
 
 
 def seed_jewelry_targets() -> int:
-    return len(_JEWELRY_QUERIES)
+    registry = get_registry()
+    count = 0
+    for prefix, queries in _JEWELRY_QUERIES.items():
+        target = MonitoredTarget(
+            handle=f"vivify_{prefix}",
+            platform="reddit",
+            queries=queries,
+            cadence="daily",
+            alert_threshold=0.6,
+            enabled=True,
+        )
+        registry.add(target)
+        count += 1
+    return count
 
 
-def list_targets() -> list:
-    return [
-        {"handle": f"vivify_{prefix}", "platform": "market",
-         "queries": queries, "enabled": True}
-        for prefix, queries in _JEWELRY_QUERIES.items()
-    ]
+def list_targets() -> list[dict]:
+    registry = get_registry()
+    return [t.model_dump() for t in registry.list_all(enabled_only=False)]
 
 
 def add_signal(handle: str, platform: str, text: str, topics: list[str]) -> dict:
-    signals = _load_signals()
-    record = {
-        "target_id": f"{handle}@{platform}",
-        "handle": handle,
-        "platform": platform,
-        "text": text,
-        "topics": topics,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    signals.append(record)
-    _save_signals(signals)
-    return record
+    state = get_state()
+    record = SignalRecord(
+        target_id=f"{handle}@{platform}",
+        handle=handle,
+        platform=platform,
+        text=text,
+        topics=topics,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+    state.store(record)
+    return record.model_dump()
 
 
 def query_signals(
@@ -84,29 +101,39 @@ def query_signals(
     platform: str = "",
     since: Optional[str] = None,
     limit: int = 50,
-) -> list:
-    signals = _load_signals()
-    filtered = []
-    for s in signals:
-        if handle and s.get("handle") != handle:
+) -> list[dict]:
+    state = get_state()
+    registry = get_registry()
+    targets = registry.list_all(enabled_only=False)
+    all_records: list[dict] = []
+    for t in targets:
+        if handle and t.handle != handle:
             continue
-        if platform and s.get("platform") != platform:
+        if platform and t.platform != platform:
             continue
-        if since and s.get("timestamp", "") < since:
-            continue
-        filtered.append(s)
-    filtered.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
-    return filtered[:limit]
+        records = state.query(t.handle, t.platform, since=since, limit=limit)
+        all_records.extend(r.model_dump() for r in records)
+    all_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return all_records[:limit]
 
 
 def get_trends_summary() -> dict:
-    signals = _load_signals()
+    state = get_state()
+    registry = get_registry()
+    targets = registry.list_all()
+    all_signals = []
+    now = datetime.now(timezone.utc)
+
+    for t in targets:
+        records = state.query(t.handle, t.platform, limit=50)
+        all_signals.extend(records)
+
     metals = {"ouro": 0, "prata": 0, "platina": 0, "rose_gold": 0}
     gemstones = {"diamante": 0, "esmeralda": 0, "safira": 0, "rubi": 0, "moissanite": 0}
     styles = {"minimalist": 0, "vintage": 0, "modern": 0, "custom": 0}
 
-    for s in signals:
-        text_lower = (s.get("text") or "").lower()
+    for s in all_signals:
+        text_lower = s.text.lower()
         for keyword in metals:
             if keyword in text_lower:
                 metals[keyword] += 1
@@ -118,18 +145,35 @@ def get_trends_summary() -> dict:
                 styles[keyword] += 1
 
     return {
-        "total_signals": len(signals),
-        "total_targets": len(_JEWELRY_QUERIES),
+        "total_signals": len(all_signals),
+        "total_targets": len(targets),
         "metal_mentions": metals,
         "gemstone_mentions": gemstones,
         "style_mentions": styles,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "last_updated": now.isoformat(),
     }
 
 
-def detect_anomalies(target_id: str = "") -> list:
-    return []
+def detect_anomalies(target_id: str = "") -> list[dict]:
+    state = get_state()
+    enricher = SignalEnricher()
+    detector = AnomalyDetector(state=state)
+
+    reports = []
+    targets = get_registry().list_all()
+    for t in targets:
+        if target_id and t.target_id != target_id:
+            continue
+        records = state.query(t.handle, t.platform, limit=100)
+        if not records:
+            continue
+        enriched = enricher.enrich_batch(records)
+        report = detector.detect(t.target_id, enriched)
+        reports.append(report.to_dict())
+    return reports
 
 
-def get_alerts(limit: int = 50) -> list:
-    return []
+def get_alerts(limit: int = 50) -> list[dict]:
+    manager = AlertManager(channels=[FileLogChannel()])
+    history = manager.history(limit=limit)
+    return [a.to_dict() for a in history]

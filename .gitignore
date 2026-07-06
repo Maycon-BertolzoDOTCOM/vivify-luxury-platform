@@ -39,3 +39,6 @@ Thumbs.db
 # Deploy artifacts
 deploy/bin/*.sh
 !deploy/bin/*.sh
+# memory data dirs
+backend/memory/
+memory/

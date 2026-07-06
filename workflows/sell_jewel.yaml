@@ -1,0 +1,42 @@
+name: "Venda de Joia com Ledger + WhatsApp"
+description: "Registra venda no ledger contábil, envia confirmação via WhatsApp, e audita na SOC hashchain"
+nodes:
+  - id: get_jewel
+    action: vivify_api
+    params:
+      endpoint: "/jewels/{input.jewel_id}"
+
+  - id: record_ledger
+    action: ledger_record_sale
+    params:
+      jewel_name: "{{ get_jewel.output.name }}"
+      channel: "{{ input.channel | default('marketplace') }}"
+      price: "{{ get_jewel.output.price | default(0) }}"
+      cost: "{{ input.cost | default(0) }}"
+      tax: "{{ input.tax | default(0) }}"
+    depends_on: [get_jewel]
+
+  - id: send_whatsapp_confirmation
+    action: wacli_send
+    params:
+      phone: "{{ input.phone }}"
+      message: |
+        *Venda Confirmada* 🎉
+        Joia: {{ get_jewel.output.name }}
+        Metal: {{ get_jewel.output.metal }}
+        Valor: R$ {{ "%.2f" | format(get_jewel.output.price | default(0)) }}
+        Transação Ledger: {{ record_ledger.output.id }}
+        Canal: {{ input.channel | default('marketplace') }}
+    depends_on: [record_ledger]
+
+  - id: audit_soc
+    action: soc_hashchain
+    params:
+      tenant: "vivify"
+      data:
+        action: "sale_completed"
+        jewel_id: "{{ input.jewel_id }}"
+        channel: "{{ input.channel | default('marketplace') }}"
+        price: "{{ get_jewel.output.price | default(0) }}"
+        ledger_txn_id: "{{ record_ledger.output.id }}"
+    depends_on: [record_ledger]

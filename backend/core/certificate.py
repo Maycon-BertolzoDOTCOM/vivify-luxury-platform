@@ -1,10 +1,14 @@
-import json
 from datetime import datetime, timezone
 from typing import Optional
+import json
 
-from ..models.enums import MetalType, GemType, JewelStatus
 from ..storage.db import fetchone, fetchall
-from ..storage.hashchain import get_jewel_chain, verify_chain
+from ..storage.hashchain import patch_db_path, get_jewel_chain
+from ..models.enums import MetalType, GemType, JewelStatus
+
+SOC_PATH = __import__("sys").path
+from soc.audit.worm_storage import store as worm_store  # noqa: E402
+from soc.audit import hashchain as hc_module  # noqa: E402
 
 
 def generate_certificate(jewel_id: str, public_url: str = "") -> dict:
@@ -13,12 +17,14 @@ def generate_certificate(jewel_id: str, public_url: str = "") -> dict:
         raise ValueError("Jewel not found")
 
     provenance = fetchall(
-        "SELECT step_name, description, timestamp, document_hash "
-        "FROM provenance_steps WHERE jewel_id = ? ORDER BY timestamp",
+        "SELECT step_name, description, timestamp, document_hash FROM provenance_steps WHERE jewel_id = ? ORDER BY timestamp",
         (jewel_id,),
     )
 
     chain_entries = get_jewel_chain(jewel_id)
+
+    patch_db_path()
+    from soc.audit.hashchain import verify_chain
     integrity = verify_chain()
 
     cert = {
@@ -44,9 +50,10 @@ def generate_certificate(jewel_id: str, public_url: str = "") -> dict:
         ],
         "chain_entries": [
             {
+                "id": e.get("id"),
                 "event_type": e.get("event_type"),
                 "timestamp": e.get("timestamp"),
-                "hash": e.get("current_hash"),
+                "hash": e.get("hash"),
                 "payload": e.get("payload"),
             }
             for e in chain_entries
@@ -59,6 +66,15 @@ def generate_certificate(jewel_id: str, public_url: str = "") -> dict:
 
 def store_certificate_worm(jewel_id: str, cert: dict) -> str:
     worm_key = f"vivify_cert_{jewel_id}_{cert['issued_at']}"
+    entry = {
+        "hash": worm_key,
+        "event_type": "vivify.certificate.issued",
+        "timestamp": cert["issued_at"],
+        "payload": cert,
+        "tenant_id": "vivify",
+        "session_id": jewel_id,
+    }
+    worm_store(entry)
     return worm_key
 
 
@@ -75,11 +91,11 @@ def verify_jewel(jewel_id: str, public_url: str = "") -> dict:
     chain_entries = cert["chain_entries"]
     if not chain_entries:
         is_valid = False
-        issues.append("No entries found in provenance chain")
+        issues.append("Nenhum registro encontrado na cadeia de proveniência")
 
     if not cert["chain_integrity_valid"]:
         is_valid = False
-        issues.append("Hash chain integrity check failed")
+        issues.append("A cadeia de hash apresentou inconsistências")
 
     return {
         "jewel_id": jewel_id,
