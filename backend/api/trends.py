@@ -7,8 +7,10 @@ from ..services.trends import (
     add_signal,
     query_signals,
     get_trends_summary,
+    get_enriched_trends_summary,
     detect_anomalies,
     get_alerts,
+    get_market_context,
 )
 from ..services.llm import SOCLLMService
 
@@ -54,14 +56,28 @@ def summary():
     return get_trends_summary()
 
 
+@router.get("/enriched-summary")
+def enriched_summary():
+    return get_enriched_trends_summary()
+
+
 @router.get("/anomalies")
 def anomalies(target_id: Optional[str] = Query("")):
     return {"anomalies": detect_anomalies(target_id or "")}
 
 
 @router.get("/alerts")
-def alerts(limit: int = Query(50, ge=1, le=200)):
-    return {"alerts": get_alerts(limit)}
+def alerts(
+    limit: int = Query(50, ge=1, le=200),
+    target_id: str = Query(""),
+):
+    return {"alerts": get_alerts(limit=limit, target_id=target_id)}
+
+
+@router.get("/market-context")
+async def market_context():
+    data = await get_market_context()
+    return data
 
 
 _llm = SOCLLMService()
@@ -69,6 +85,6 @@ _llm = SOCLLMService()
 
 @router.post("/narrative")
 async def trend_narrative():
-    summary = get_trends_summary()
+    summary = get_enriched_trends_summary() if get_trends_summary().get("total_signals", 0) > 0 else get_trends_summary()
     narrative = await _llm.generate_trend_narrative(summary)
     return {"narrative": narrative, "source": "soc_gateway"}

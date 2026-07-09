@@ -1,9 +1,11 @@
 """Trends service — weak signal detection for jewelry market intelligence."""
 
-import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
+
+import httpx
 
 from ..weak_signal.schemas import MonitoredTarget, SignalRecord
 from ..weak_signal.state import SignalState
@@ -16,6 +18,12 @@ logger = logging.getLogger("vivify.trends")
 
 _SIGNAL_STATE = SignalState()
 _SIGNAL_REGISTRY = SignalRegistry()
+
+_ALERT_MANAGER = AlertManager(channels=[FileLogChannel()])
+_ENRICHER = SignalEnricher(enable_odysseus=True)
+
+ODYSSEUS_URL = os.getenv("ODYSSEUS_URL", "http://localhost:8080")
+ODYSSEUS_TIMEOUT = float(os.getenv("ODYSSEUS_TIMEOUT", "5.0"))
 
 
 def get_state() -> SignalState:
@@ -149,10 +157,20 @@ def get_trends_summary() -> dict:
     }
 
 
+def get_enriched_trends_summary() -> dict:
+    summary = get_trends_summary()
+    context = _ENRICHER.get_context()
+    if context.get("market_data"):
+        summary["market_events"] = context["market_data"]
+    if context.get("trends"):
+        summary["market_trends"] = context["trends"]
+    return summary
+
+
 def detect_anomalies(target_id: str = "") -> list[dict]:
     state = get_state()
-    enricher = SignalEnricher()
-    detector = AnomalyDetector(state=state)
+    enricher = SignalEnricher(enable_odysseus=False)
+    detector = AnomalyDetector(state=state, std_multiplier=2.0)
 
     reports = []
     targets = get_registry().list_all()
@@ -165,10 +183,40 @@ def detect_anomalies(target_id: str = "") -> list[dict]:
         enriched = enricher.enrich_batch(records)
         report = detector.detect(t.target_id, enriched)
         reports.append(report.to_dict())
+
+        if report.anomaly_count > 0 and report.score >= getattr(t, "alert_threshold", 0.6):
+            _ALERT_MANAGER.emit(
+                target_id=t.target_id,
+                message=f"Anomalia detectada: {report.anomaly_count} keyword(s) com z-score > {detector.std_multiplier} (score={report.score})",
+                severity="high" if report.score > 0.8 else "medium",
+            )
+
     return reports
 
 
-def get_alerts(limit: int = 50) -> list[dict]:
-    manager = AlertManager(channels=[FileLogChannel()])
-    history = manager.history(limit=limit)
+def get_alerts(limit: int = 50, target_id: str = "") -> list[dict]:
+    history = _ALERT_MANAGER.history(limit=limit, target_id=target_id)
     return [a.to_dict() for a in history]
+
+
+async def get_market_context() -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=ODYSSEUS_TIMEOUT) as client:
+            resp = await client.post(
+                f"{ODYSSEUS_URL}/v1/omnichannel/generate",
+                json={
+                    "channel": "intelligence",
+                    "vertical": "jewelry",
+                    "payload": {
+                        "sources": ["shadowfeed", "predictive"],
+                        "query": "jewelry market trends",
+                        "limit": 10,
+                    },
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("data", {})
+    except Exception as e:
+        logger.debug("Odysseus market context unavailable: %s", e)
+    return {}
